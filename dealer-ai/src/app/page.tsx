@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Vehicle = {
   year: string;
@@ -27,101 +27,190 @@ type Deal = {
   savedAt: string;
 };
 
+type VehicleCaseStatus =
+  | "Evaluating"
+  | "Approved to Buy"
+  | "Purchased"
+  | "In Repair"
+  | "Ready to List"
+  | "Listed"
+  | "Sold"
+  | "Passed";
+
+type VehicleCase = {
+  id: number;
+  caseNumber: string;
+  vin: string;
+  vehicle: Vehicle;
+  purchase: string;
+  resale: string;
+  parts: string;
+  labor: string;
+  auctionFees: string;
+  transport: string;
+  detailing: string;
+  reserve: string;
+  status: VehicleCaseStatus;
+  issueNotes: string;
+  createdAt: string;
+};
+
+type InspectionPhoto = {
+  id: number;
+  name: string;
+  area: string;
+  notes: string;
+  previewUrl: string;
+};
+
 const STORAGE_KEY = "dealer-ai-saved-deals";
+const CASES_STORAGE_KEY = "dealer-ai-vehicle-cases";
+
+const scanAreas = [
+  "Front",
+  "Passenger side",
+  "Rear",
+  "Driver side",
+  "Front detail",
+  "Interior",
+  "Dashboard",
+];
+
+const caseStatuses: VehicleCaseStatus[] = [
+  "Evaluating",
+  "Approved to Buy",
+  "Purchased",
+  "In Repair",
+  "Ready to List",
+  "Listed",
+  "Sold",
+  "Passed",
+];
+
+const emptyVehicle: Vehicle = {
+  year: "",
+  make: "",
+  model: "",
+  mileage: "",
+  location: "",
+};
+
+function money(value: number) {
+  return value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
+}
+
+function numberValue(value: string) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export default function Home() {
-  // Vehicle information
-  const [vehicle, setVehicle] = useState<Vehicle>({
-    year: "2020",
-    make: "Toyota",
-    model: "Camry",
-    mileage: "75000",
-    location: "Houston, TX",
-  });
-
   const [vin, setVin] = useState("");
+  const [vehicle, setVehicle] = useState<Vehicle>(emptyVehicle);
   const [decoding, setDecoding] = useState(false);
   const [vinMessage, setVinMessage] = useState("");
 
-  // Deal calculator inputs
-  const [resale, setResale] = useState("16000");
-  const [parts, setParts] = useState("400");
-  const [labor, setLabor] = useState("500");
-  const [auctionFees, setAuctionFees] = useState("400");
+  const [resale, setResale] = useState("15000");
+  const [parts, setParts] = useState("800");
+  const [labor, setLabor] = useState("600");
+  const [auctionFees, setAuctionFees] = useState("500");
   const [transport, setTransport] = useState("200");
-  const [detailing, setDetailing] = useState("100");
-  const [reserve, setReserve] = useState("300");
-  const [profit, setProfit] = useState("2500");
-  const [purchase, setPurchase] = useState("11000");
+  const [detailing, setDetailing] = useState("150");
+  const [reserve, setReserve] = useState("500");
+  const [profit, setProfit] = useState("2000");
 
-  // Saved deals
-  const [deals, setDeals] = useState<Deal[]>([]);
+  const [savedDeals, setSavedDeals] = useState<Deal[]>([]);
+  const [vehicleCases, setVehicleCases] = useState<VehicleCase[]>([]);
   const [storageLoaded, setStorageLoaded] = useState(false);
-  const [message, setMessage] = useState("");
+  const [activeTab, setActiveTab] = useState<"calculator" | "cases">(
+    "calculator"
+  );
 
-  // Load saved deals when the app opens
+  const [inspectionPhotos, setInspectionPhotos] = useState<
+    InspectionPhoto[]
+  >([]);
+  const [photoMessage, setPhotoMessage] = useState("");
+  const [cameraOn, setCameraOn] = useState(false);
+  const [scanStep, setScanStep] = useState(0);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Load saved deals and vehicle cases from this browser.
   useEffect(() => {
     try {
-      const storedDeals = localStorage.getItem(STORAGE_KEY);
+      const deals = localStorage.getItem(STORAGE_KEY);
+      const cases = localStorage.getItem(CASES_STORAGE_KEY);
 
-      if (storedDeals) {
-        const parsed = JSON.parse(storedDeals);
-
-        if (Array.isArray(parsed)) {
-          setDeals(parsed);
-        }
+      if (deals) {
+        setSavedDeals(JSON.parse(deals) as Deal[]);
       }
-    } catch {
-      setMessage("Could not read saved deals from browser storage.");
+
+      if (cases) {
+        setVehicleCases(JSON.parse(cases) as VehicleCase[]);
+      }
+    } catch (error) {
+      console.error("Could not load saved data:", error);
     } finally {
       setStorageLoaded(true);
     }
   }, []);
 
-  // Keep the saved deals in browser storage
+  // Save changes to the browser after the initial load.
   useEffect(() => {
     if (!storageLoaded) return;
 
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(deals));
-    } catch {
-      setMessage("Could not save deals. Check your browser storage.");
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedDeals));
+      localStorage.setItem(
+        CASES_STORAGE_KEY,
+        JSON.stringify(vehicleCases)
+      );
+    } catch (error) {
+      console.error("Could not save data:", error);
     }
-  }, [deals, storageLoaded]);
+  }, [savedDeals, vehicleCases, storageLoaded]);
 
-  // Format numbers as dollars
-  const money = (value: number) =>
-    value.toLocaleString("en-US", {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    });
+  // Stop the camera when leaving the page.
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
-  // Add up the estimated costs other than the car purchase
-  const totalCosts =
-    Number(parts || 0) +
-    Number(labor || 0) +
-    Number(auctionFees || 0) +
-    Number(transport || 0) +
-    Number(detailing || 0) +
-    Number(reserve || 0);
+  // Calculate the deal.
+  const resaleValue = numberValue(resale);
+  const partsValue = numberValue(parts);
+  const laborValue = numberValue(labor);
+  const feesValue = numberValue(auctionFees);
+  const transportValue = numberValue(transport);
+  const detailingValue = numberValue(detailing);
+  const reserveValue = numberValue(reserve);
+  const profitValue = numberValue(profit);
 
-  // Maximum purchase price while meeting the profit target
-  const maxBuy =
-    Number(resale || 0) -
-    totalCosts -
-    Number(profit || 0);
+  const totalExpenses =
+    partsValue +
+    laborValue +
+    feesValue +
+    transportValue +
+    detailingValue;
 
-  // Projected profit at the entered purchase price
-  const actualProfit =
-    Number(resale || 0) -
-    Number(purchase || 0) -
-    totalCosts;
+  const maxPurchasePrice =
+    resaleValue - totalExpenses - reserveValue - profitValue;
 
-  const field =
-    "mt-1 w-full rounded-lg border border-slate-300 bg-white p-3 text-slate-900 outline-none focus:border-blue-600";
+  const estimatedProfitAtPurchase = (
+    purchasePrice: number
+  ) =>
+    resaleValue -
+    purchasePrice -
+    totalExpenses -
+    reserveValue;
 
-  // Decode the VIN using the free NHTSA API
+  // Decode a VIN through the NHTSA public API.
   async function decodeVin() {
     const cleanVin = vin.trim().toUpperCase();
 
@@ -139,57 +228,162 @@ export default function Home() {
       );
 
       if (!response.ok) {
-        throw new Error("The VIN service could not be reached.");
+        throw new Error("VIN lookup failed.");
       }
 
       const data = await response.json();
       const result = data.Results?.[0];
 
       if (!result) {
-        throw new Error("No vehicle information was returned.");
+        setVinMessage("No vehicle information was returned.");
+        return;
       }
 
-      const year = result.ModelYear || "";
-      const make = result.Make || "";
-      const model = [result.Model, result.Trim]
-        .filter(Boolean)
-        .join(" ");
+      const decodedYear = result.ModelYear || "";
+      const decodedMake = result.Make || "";
+      const decodedModel = result.Model || "";
 
-      if (!year && !make && !model) {
+      if (!decodedYear && !decodedMake && !decodedModel) {
         setVinMessage(
-          "No vehicle details were found. Check the VIN and try again."
+          "The VIN could not be decoded. Check the VIN and try again."
         );
         return;
       }
 
       setVehicle((current) => ({
         ...current,
-        year: year || current.year,
-        make: make || current.make,
-        model: model || current.model,
+        year: decodedYear,
+        make: decodedMake,
+        model: decodedModel,
       }));
 
-      if (result.ErrorCode && result.ErrorCode !== "0") {
-        setVinMessage(
-          "Some VIN information may be incomplete. Review the vehicle details."
-        );
-      } else {
-        setVinMessage(
-          "VIN decoded. Review the details before saving the deal."
-        );
-      }
-    } catch (error) {
       setVinMessage(
-        error instanceof Error
-          ? error.message
-          : "An error occurred while decoding the VIN."
+        `Vehicle found: ${decodedYear} ${decodedMake} ${decodedModel}`
+      );
+    } catch (error) {
+      console.error("VIN decoding error:", error);
+      setVinMessage(
+        "VIN lookup failed. Check your connection and try again."
       );
     } finally {
       setDecoding(false);
     }
   }
 
-  // Save the current vehicle and its financial estimates
+  // Start the phone camera.
+  async function startCamera() {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setPhotoMessage(
+          "Camera access requires HTTPS and a supported browser."
+        );
+        return;
+      }
+
+      // Avoid opening multiple camera streams.
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
+      setCameraOn(true);
+      setPhotoMessage("Camera ready. Start your vehicle walkaround.");
+    } catch (error) {
+      console.error("Camera error:", error);
+      setPhotoMessage(
+        "Camera access failed. Allow camera permission and try again."
+      );
+    }
+  }
+
+  // Stop the phone camera.
+  function stopCamera() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraOn(false);
+    setPhotoMessage("Camera stopped.");
+  }
+
+  // Capture a photo from the camera preview.
+  async function captureScanPhoto() {
+    const video = videoRef.current;
+
+    if (!video || !video.videoWidth || !video.videoHeight) {
+      setPhotoMessage("Wait for the camera preview to load.");
+      return;
+    }
+
+    if (inspectionPhotos.length >= 40) {
+      setPhotoMessage("Maximum of 40 inspection photos reached.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      setPhotoMessage("Could not capture the image.");
+      return;
+    }
+
+    context.drawImage(video, 0, 0);
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", 0.85);
+    });
+
+    if (!blob) {
+      setPhotoMessage("Could not create the photo.");
+      return;
+    }
+
+    const photo: InspectionPhoto = {
+      id: Date.now() + Math.random(),
+      name: `${scanAreas[scanStep]} - ${Date.now()}.jpg`,
+      area: scanAreas[scanStep],
+      notes: "",
+      previewUrl: URL.createObjectURL(blob),
+    };
+
+    setInspectionPhotos((current) => [...current, photo]);
+    setPhotoMessage(`${scanAreas[scanStep]} photo captured.`);
+
+    setScanStep((current) =>
+      Math.min(current + 1, scanAreas.length - 1)
+    );
+  }
+
+  // Remove an inspection photo.
+  function removeInspectionPhoto(id: number) {
+    setInspectionPhotos((current) => {
+      const photo = current.find((item) => item.id === id);
+
+      if (photo) {
+        URL.revokeObjectURL(photo.previewUrl);
+      }
+
+      return current.filter((item) => item.id !== id);
+    });
+  }
+
+  // Save the current vehicle and its financial estimates.
   function saveDeal() {
     const deal: Deal = {
       id: Date.now(),
@@ -203,18 +397,18 @@ export default function Home() {
       detailing,
       reserve,
       profit,
-      purchase,
+      purchase: String(Math.max(0, maxPurchasePrice)),
       savedAt: new Date().toLocaleString(),
     };
 
-    setDeals((current) => [deal, ...current]);
-    setMessage("Deal saved successfully.");
+    setSavedDeals((current) => [deal, ...current]);
+    setVinMessage("Deal saved successfully.");
   }
 
-  // Load a saved deal back into the calculator
+  // Load a saved deal back into the calculator.
   function loadDeal(deal: Deal) {
+    setVin(deal.vin);
     setVehicle({ ...deal.vehicle });
-    setVin(deal.vin || "");
     setResale(deal.resale);
     setParts(deal.parts);
     setLabor(deal.labor);
@@ -223,396 +417,632 @@ export default function Home() {
     setDetailing(deal.detailing);
     setReserve(deal.reserve);
     setProfit(deal.profit);
-    setPurchase(deal.purchase);
-    setVinMessage("");
-    setMessage("Saved deal loaded into the calculator.");
-
+    setActiveTab("calculator");
+    setVinMessage("Saved deal loaded.");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // Delete a saved deal
+  // Delete a saved deal.
   function deleteDeal(id: number) {
-    setDeals((current) =>
+    setSavedDeals((current) =>
       current.filter((deal) => deal.id !== id)
     );
-    setMessage("Deal deleted.");
   }
 
+  // Create a case to track the vehicle through the dealership.
+  function createVehicleCase() {
+    const newCase: VehicleCase = {
+      id: Date.now(),
+      caseNumber: `VC-${Date.now().toString().slice(-6)}`,
+      vin: vin.trim().toUpperCase(),
+      vehicle: { ...vehicle },
+      purchase: String(Math.max(0, maxPurchasePrice)),
+      resale,
+      parts,
+      labor,
+      auctionFees,
+      transport,
+      detailing,
+      reserve,
+      status: "Evaluating",
+      issueNotes: "",
+      createdAt: new Date().toLocaleDateString(),
+    };
+
+    setVehicleCases((current) => [newCase, ...current]);
+    setActiveTab("cases");
+  }
+
+  // Update the status of a vehicle case.
+  function updateCaseStatus(id: number, status: VehicleCaseStatus) {
+    setVehicleCases((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, status } : item
+      )
+    );
+  }
+
+  // Update inspection notes.
+  function updateCaseNotes(id: number, issueNotes: string) {
+    setVehicleCases((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, issueNotes } : item
+      )
+    );
+  }
+
+  // Delete a vehicle case.
+  function deleteVehicleCase(id: number) {
+    setVehicleCases((current) =>
+      current.filter((item) => item.id !== id)
+    );
+  }
+
+  const inputClass =
+    "w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100";
+
+  const labelClass =
+    "mb-1.5 block text-sm font-medium text-slate-600";
+
+  const cardClass =
+    "rounded-2xl border border-slate-200 bg-white p-5 shadow-sm";
+
+  const buttonClass =
+    "rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50";
+
   return (
-    <main className="min-h-screen bg-slate-100 p-5 text-slate-900 md:p-10">
-      <div className="mx-auto max-w-6xl space-y-6">
-
-        {/* Header */}
-        <header className="rounded-2xl bg-slate-950 p-7 text-white">
-          <p className="text-sm font-semibold uppercase tracking-widest text-blue-300">
-            Dealer Intelligence
-          </p>
-
-          <h1 className="mt-2 text-3xl font-bold md:text-4xl">
-            Dealer AI Platform
-          </h1>
-
-          <p className="mt-3 text-slate-300">
-            Find the right cars. Estimate repair costs. Buy for profit.
-          </p>
-        </header>
-
-        <div className="grid gap-6 lg:grid-cols-2">
-
-          {/* Vehicle information and VIN decoder */}
-          <section className="rounded-2xl bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-bold">
-              Vehicle Information
-            </h2>
-
-            <p className="mb-4 mt-2 text-sm text-slate-500">
-              Decode the VIN or enter the vehicle details manually.
+    <main className="min-h-screen bg-slate-100 text-slate-900">
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-5">
+          <div>
+            <h1 className="text-2xl font-black tracking-tight">
+              CarAI
+            </h1>
+            <p className="text-sm text-slate-500">
+              Dealer acquisition and vehicle inspection platform
             </p>
+          </div>
 
-            <div className="mb-5 rounded-xl bg-blue-50 p-4">
-              <label className="block text-sm font-semibold">
-                Vehicle Identification Number (VIN)
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setActiveTab("calculator")}
+              className={`rounded-lg px-4 py-2 font-medium ${
+                activeTab === "calculator"
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-100 text-slate-700"
+              }`}
+            >
+              Deal Calculator
+            </button>
+            <button
+              onClick={() => setActiveTab("cases")}
+              className={`rounded-lg px-4 py-2 font-medium ${
+                activeTab === "cases"
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-100 text-slate-700"
+              }`}
+            >
+              Vehicle Cases ({vehicleCases.length})
+            </button>
+          </div>
+        </div>
+      </header>
 
-                <input
-                  className={field}
-                  value={vin}
-                  maxLength={17}
-                  placeholder="Enter 17-character VIN"
-                  onChange={(e) => {
-                    setVin(e.target.value.toUpperCase());
-                    setVinMessage("");
-                  }}
-                />
-              </label>
+      <div className="mx-auto max-w-7xl space-y-6 px-5 py-8">
+        {activeTab === "calculator" && (
+          <>
+            <section className={cardClass}>
+              <h2 className="mb-1 text-xl font-bold">
+                Vehicle Information
+              </h2>
+              <p className="mb-5 text-sm text-slate-500">
+                Decode a VIN or enter vehicle information manually.
+              </p>
 
-              <button
-                onClick={decodeVin}
-                disabled={decoding}
-                className="mt-3 w-full rounded-lg bg-blue-700 p-3 font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
-              >
-                {decoding ? "Decoding VIN..." : "Decode VIN"}
-              </button>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <div className="flex-1">
+                  <label className={labelClass}>Vehicle VIN</label>
+                  <input
+                    className={inputClass}
+                    value={vin}
+                    onChange={(event) =>
+                      setVin(event.target.value.toUpperCase())
+                    }
+                    placeholder="Enter 17-character VIN"
+                    maxLength={17}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    className={buttonClass}
+                    onClick={decodeVin}
+                    disabled={decoding}
+                  >
+                    {decoding ? "Decoding..." : "Decode VIN"}
+                  </button>
+                </div>
+              </div>
 
               {vinMessage && (
-                <p className="mt-3 text-sm text-slate-700">
+                <p className="mt-3 text-sm text-blue-700" role="status">
                   {vinMessage}
                 </p>
               )}
-            </div>
 
-            <div className="space-y-3">
-              {(
-                [
-                  ["year", "Year"],
-                  ["make", "Make"],
-                  ["model", "Model and trim"],
-                  ["mileage", "Mileage"],
-                  ["location", "City or ZIP code"],
-                ] as const
-              ).map(([key, label]) => (
-                <label
-                  key={key}
-                  className="block text-sm font-medium"
-                >
-                  {label}
+              <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {(
+                  [
+                    ["Year", "year"],
+                    ["Make", "make"],
+                    ["Model", "model"],
+                    ["Mileage", "mileage"],
+                    ["Location", "location"],
+                  ] as const
+                ).map(([label, key]) => (
+                  <div key={key}>
+                    <label className={labelClass}>{label}</label>
+                    <input
+                      className={inputClass}
+                      value={vehicle[key]}
+                      onChange={(event) =>
+                        setVehicle((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }))
+                      }
+                      placeholder={label}
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
 
-                  <input
-                    className={field}
-                    value={vehicle[key]}
-                    onChange={(e) =>
-                      setVehicle({
-                        ...vehicle,
-                        [key]: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-              ))}
-            </div>
-
-            <p className="mt-4 text-xs text-slate-500">
-              VIN decoding retrieves available manufacturer-reported
-              vehicle details. It does not verify accident history,
-              ownership, title status, or market value.
-            </p>
-          </section>
-
-          {/* Deal calculator */}
-          <section className="rounded-2xl bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-bold">
-              Deal Calculator
-            </h2>
-
-            <p className="mb-4 mt-2 text-sm text-slate-500">
-              Enter the expected selling price and estimated expenses.
-            </p>
-
-            {(
-              [
-                ["Expected resale price", resale, setResale],
-                ["Parts", parts, setParts],
-                ["Labor", labor, setLabor],
-                ["Auction fees", auctionFees, setAuctionFees],
-                ["Transportation", transport, setTransport],
-                ["Detailing", detailing, setDetailing],
-                ["Target profit", profit, setProfit],
-                ["Your purchase price", purchase, setPurchase],
-                ["Contingency reserve", reserve, setReserve],
-              ] as const
-            ).map(([label, value, setter]) => (
-              <label
-                key={label}
-                className="mb-4 block text-sm font-medium"
-              >
-                {label} ($)
-
-                <input
-                  className={field}
-                  type="number"
-                  min="0"
-                  step="100"
-                  value={value}
-                  onChange={(e) => setter(e.target.value)}
-                />
-              </label>
-            ))}
-
-            <div className="mb-4 rounded-xl bg-slate-100 p-4">
-              <p className="text-sm text-slate-600">
-                Total estimated costs, excluding purchase price
-              </p>
-
-              <p className="mt-1 text-2xl font-bold">
-                {money(totalCosts)}
-              </p>
-            </div>
-
-            <div className="rounded-xl bg-slate-950 p-5 text-white">
-              <p className="text-sm text-slate-300">
-                Maximum Purchase Price
-              </p>
-
-              <p className={`mt-1 text-4xl font-bold ${
-                maxBuy >= 0
-                  ? "text-emerald-400"
-                  : "text-red-400"
-              }`}>
-                {money(maxBuy)}
-              </p>
-
-              <p className="mt-2 text-xs text-slate-400">
-                Maximum amount to pay while meeting your profit target.
-              </p>
-
-              <div className="mt-4 border-t border-slate-700 pt-4">
-                <p className="text-sm text-slate-300">
-                  Projected Profit at Your Purchase Price
+            <section className="grid gap-6 lg:grid-cols-3">
+              <div className={`${cardClass} lg:col-span-2`}>
+                <h2 className="mb-1 text-xl font-bold">
+                  Deal Calculator
+                </h2>
+                <p className="mb-5 text-sm text-slate-500">
+                  Estimate your maximum purchase price before buying.
                 </p>
 
-                <p className={`mt-1 text-2xl font-bold ${
-                  actualProfit >= Number(profit || 0)
-                    ? "text-emerald-400"
-                    : actualProfit >= 0
-                      ? "text-yellow-400"
-                      : "text-red-400"
-                }`}>
-                  {money(actualProfit)}
-                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {(
+                    [
+                      ["Expected resale price ($)", resale, setResale],
+                      ["Parts estimate ($)", parts, setParts],
+                      ["Labor estimate ($)", labor, setLabor],
+                      ["Auction fees ($)", auctionFees, setAuctionFees],
+                      ["Transportation ($)", transport, setTransport],
+                      ["Detailing ($)", detailing, setDetailing],
+                      ["Unexpected-cost reserve ($)", reserve, setReserve],
+                      ["Target profit ($)", profit, setProfit],
+                    ] as const
+                  ).map(([label, value, setter]) => (
+                    <div key={label}>
+                      <label className={labelClass}>{label}</label>
+                      <input
+                        className={inputClass}
+                        type="number"
+                        min="0"
+                        step="50"
+                        value={value}
+                        onChange={(event) => setter(event.target.value)}
+                      />
+                    </div>
+                  ))}
+                </div>
 
-                <p className="mt-2 text-xs text-slate-400">
-                  {actualProfit < 0
-                    ? "Warning: this deal is projected to lose money."
-                    : actualProfit < Number(profit || 0)
-                      ? "Projected profit is below your target."
-                      : "This deal meets or exceeds your profit target."}
-                </p>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button className={buttonClass} onClick={saveDeal}>
+                    Save Deal
+                  </button>
+                  <button
+                    className="rounded-lg border border-slate-300 px-4 py-2.5 font-semibold text-slate-700 hover:bg-slate-50"
+                    onClick={createVehicleCase}
+                  >
+                    Create Vehicle Case
+                  </button>
+                </div>
               </div>
 
-              <p className="mt-4 text-xs text-slate-400">
-                Estimates only. Verify market value, inspection results,
-                repair quotes, taxes, and applicable fees before buying.
-              </p>
-            </div>
+              <div className="space-y-4">
+                <div className="rounded-2xl bg-slate-900 p-6 text-white shadow-sm">
+                  <p className="text-sm text-slate-300">
+                    Maximum Purchase Price
+                  </p>
+                  <p className="mt-2 text-4xl font-black">
+                    {money(Math.max(0, maxPurchasePrice))}
+                  </p>
+                  <p className="mt-3 text-sm text-slate-300">
+                    Based on your resale estimate, costs, reserve, and
+                    target profit.
+                  </p>
+                </div>
 
-            <button
-              onClick={saveDeal}
-              className="mt-5 w-full rounded-lg bg-emerald-600 p-3 font-semibold text-white hover:bg-emerald-700"
-            >
-              Save Current Deal
-            </button>
+                <div className={cardClass}>
+                  <h3 className="font-bold">Deal Breakdown</h3>
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Resale price</span>
+                      <span className="font-semibold">
+                        {money(resaleValue)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Repair and fees</span>
+                      <span className="font-semibold">
+                        {money(totalExpenses)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Reserve</span>
+                      <span className="font-semibold">
+                        {money(reserveValue)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-500">Target profit</span>
+                      <span className="font-semibold">
+                        {money(profitValue)}
+                      </span>
+                    </div>
+                    <hr className="border-slate-200" />
+                    <div className="flex justify-between gap-3">
+                      <span className="font-bold">Total deductions</span>
+                      <span className="font-bold">
+                        {money(
+                          totalExpenses + reserveValue + profitValue
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
 
-            <p className="mt-3 text-xs text-slate-500">
-              Saves the VIN, vehicle information, and financial estimates.
-            </p>
-          </section>
-        </div>
+            <section className={cardClass}>
+              <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold">
+                    360° Vehicle Walkaround
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Capture exterior and interior photos for inspection.
+                  </p>
+                </div>
+                <span className="rounded-full bg-blue-50 px-3 py-1 text-sm font-semibold text-blue-700">
+                  {inspectionPhotos.length}/40 photos
+                </span>
+              </div>
 
-        {/* Saved deals */}
-        <section className="rounded-2xl bg-white p-6 shadow-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-xl font-bold">Saved Deals</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Review and compare the vehicles you have evaluated.
-              </p>
-            </div>
+              <div className="grid gap-5 lg:grid-cols-2">
+                <div>
+                  <div className="overflow-hidden rounded-xl bg-slate-950">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="aspect-video w-full object-cover"
+                    />
+                  </div>
 
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold">
-              {deals.length} {deals.length === 1 ? "deal" : "deals"}
-            </span>
-          </div>
+                  <p className="mt-3 text-sm text-slate-600">
+                    Current capture area:{" "}
+                    <strong>{scanAreas[scanStep]}</strong>
+                  </p>
 
-          {message && (
-            <p className="mt-4 rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
-              {message}
-            </p>
-          )}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      className={buttonClass}
+                      onClick={startCamera}
+                      disabled={cameraOn}
+                    >
+                      Start Camera
+                    </button>
+                    <button
+                      className="rounded-lg bg-emerald-600 px-4 py-2.5 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                      onClick={captureScanPhoto}
+                      disabled={!cameraOn || inspectionPhotos.length >= 40}
+                    >
+                      Capture Photo
+                    </button>
+                    <button
+                      className="rounded-lg border border-slate-300 px-4 py-2.5 font-semibold hover:bg-slate-50"
+                      onClick={stopCamera}
+                      disabled={!cameraOn}
+                    >
+                      Stop Camera
+                    </button>
+                  </div>
 
-          {!storageLoaded ? (
-            <p className="mt-5 text-sm text-slate-500">
-              Loading saved deals...
-            </p>
-          ) : deals.length === 0 ? (
-            <div className="mt-5 rounded-xl border-2 border-dashed border-slate-300 p-8 text-center">
-              <p className="font-semibold">No deals saved yet</p>
-              <p className="mt-1 text-sm text-slate-500">
-                Fill out the calculator and select Save Current Deal.
-              </p>
-            </div>
-          ) : (
-            <div className="mt-5 space-y-4">
-              {deals.map((deal) => {
-                const dealCosts =
-                  Number(deal.parts || 0) +
-                  Number(deal.labor || 0) +
-                  Number(deal.auctionFees || 0) +
-                  Number(deal.transport || 0) +
-                  Number(deal.detailing || 0) +
-                  Number(deal.reserve || 0);
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {scanAreas.map((area, index) => (
+                      <button
+                        key={area}
+                        onClick={() => setScanStep(index)}
+                        className={`rounded-full px-3 py-1.5 text-sm ${
+                          scanStep === index
+                            ? "bg-blue-600 text-white"
+                            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        }`}
+                      >
+                        {area}
+                      </button>
+                    ))}
+                  </div>
 
-                const dealProfit =
-                  Number(deal.resale || 0) -
-                  Number(deal.purchase || 0) -
-                  dealCosts;
+                  {photoMessage && (
+                    <p className="mt-3 text-sm text-blue-700" role="status">
+                      {photoMessage}
+                    </p>
+                  )}
+                </div>
 
-                const dealMaxBuy =
-                  Number(deal.resale || 0) -
-                  dealCosts -
-                  Number(deal.profit || 0);
+                <div>
+                  <h3 className="mb-3 font-bold">
+                    Inspection Photos ({inspectionPhotos.length})
+                  </h3>
 
-                return (
-                  <article
-                    key={deal.id}
-                    className="rounded-xl border border-slate-200 p-4"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
+                  {inspectionPhotos.length === 0 ? (
+                    <div className="rounded-xl border-2 border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+                      Start the camera and capture your first photo.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {inspectionPhotos.map((photo) => (
+                        <div
+                          key={photo.id}
+                          className="overflow-hidden rounded-xl border border-slate-200"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={photo.previewUrl}
+                            alt={photo.area}
+                            className="aspect-square w-full object-cover"
+                          />
+                          <div className="p-2">
+                            <p className="truncate text-xs font-semibold">
+                              {photo.area}
+                            </p>
+                            <button
+                              className="mt-2 text-xs font-semibold text-red-600 hover:text-red-800"
+                              onClick={() =>
+                                removeInspectionPhoto(photo.id)
+                              }
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <p className="mt-4 text-xs leading-5 text-slate-500">
+                    Photos currently stay in this browser session. They
+                    are not uploaded to a server, converted into a 3D model,
+                    or analyzed for damage yet.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className={cardClass}>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold">Saved Deals</h2>
+                  <p className="text-sm text-slate-500">
+                    Your saved calculations on this browser.
+                  </p>
+                </div>
+                <span className="text-sm text-slate-500">
+                  {savedDeals.length} saved
+                </span>
+              </div>
+
+              {savedDeals.length === 0 ? (
+                <p className="rounded-lg bg-slate-50 p-5 text-sm text-slate-500">
+                  No saved deals yet. Enter a vehicle and click Save Deal.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {savedDeals.map((deal) => (
+                    <div
+                      key={deal.id}
+                      className="flex flex-col justify-between gap-4 rounded-xl border border-slate-200 p-4 sm:flex-row sm:items-center"
+                    >
                       <div>
-                        <h3 className="text-lg font-bold">
+                        <p className="font-bold">
                           {deal.vehicle.year} {deal.vehicle.make}{" "}
                           {deal.vehicle.model}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          VIN: {deal.vin || "Not provided"} · Saved{" "}
+                          {deal.savedAt}
+                        </p>
+                        <p className="mt-2 text-sm">
+                          Max purchase:{" "}
+                          <strong>
+                            {money(numberValue(deal.purchase))}
+                          </strong>
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                          onClick={() => loadDeal(deal)}
+                        >
+                          Load
+                        </button>
+                        <button
+                          className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50"
+                          onClick={() => deleteDeal(deal.id)}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {activeTab === "cases" && (
+          <section className={cardClass}>
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-bold">Vehicle Cases</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Track each vehicle from evaluation through sale.
+                </p>
+              </div>
+              <button
+                className={buttonClass}
+                onClick={() => setActiveTab("calculator")}
+              >
+                + New Vehicle
+              </button>
+            </div>
+
+            {vehicleCases.length === 0 ? (
+              <div className="rounded-xl border-2 border-dashed border-slate-300 p-10 text-center">
+                <h3 className="font-bold">No vehicle cases yet</h3>
+                <p className="mt-2 text-sm text-slate-500">
+                  Open the Deal Calculator and click Create Vehicle Case.
+                </p>
+                <button
+                  className={`${buttonClass} mt-4`}
+                  onClick={() => setActiveTab("calculator")}
+                >
+                  Open Calculator
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {vehicleCases.map((item) => (
+                  <article
+                    key={item.id}
+                    className="rounded-xl border border-slate-200 p-5"
+                  >
+                    <div className="flex flex-col justify-between gap-3 sm:flex-row">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-blue-700">
+                          {item.caseNumber}
+                        </p>
+                        <h3 className="mt-1 text-lg font-bold">
+                          {item.vehicle.year} {item.vehicle.make}{" "}
+                          {item.vehicle.model}
                         </h3>
-
-                        {deal.vin && (
-                          <p className="mt-1 break-all text-xs text-slate-500">
-                            VIN: {deal.vin}
-                          </p>
-                        )}
-
                         <p className="mt-1 text-sm text-slate-500">
-                          {Number(deal.vehicle.mileage || 0).toLocaleString()} miles
-                          {" · "}{deal.vehicle.location}
-                        </p>
-
-                        <p className="mt-1 text-xs text-slate-400">
-                          Saved {deal.savedAt}
+                          VIN: {item.vin || "Not provided"} · Created{" "}
+                          {item.createdAt}
                         </p>
                       </div>
 
-                      <p className={`text-xl font-bold ${
-                        dealProfit >= 0
-                          ? "text-emerald-600"
-                          : "text-red-600"
-                      }`}>
-                        {money(dealProfit)}
-                        <span className="block text-xs font-normal text-slate-500">
-                          Projected profit
-                        </span>
-                      </p>
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                      <div className="rounded-lg bg-slate-50 p-3">
-                        <p className="text-xs text-slate-500">Buy price</p>
-                        <p className="mt-1 font-semibold">
-                          {money(Number(deal.purchase || 0))}
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg bg-slate-50 p-3">
-                        <p className="text-xs text-slate-500">Resale price</p>
-                        <p className="mt-1 font-semibold">
-                          {money(Number(deal.resale || 0))}
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg bg-slate-50 p-3">
-                        <p className="text-xs text-slate-500">Other costs</p>
-                        <p className="mt-1 font-semibold">
-                          {money(dealCosts)}
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg bg-slate-50 p-3">
-                        <p className="text-xs text-slate-500">Maximum buy</p>
-                        <p className="mt-1 font-semibold">
-                          {money(dealMaxBuy)}
-                        </p>
+                      <div>
+                        <label
+                          className={labelClass}
+                          htmlFor={`status-${item.id}`}
+                        >
+                          Case status
+                        </label>
+                        <select
+                          id={`status-${item.id}`}
+                          className={inputClass}
+                          value={item.status}
+                          onChange={(event) =>
+                            updateCaseStatus(
+                              item.id,
+                              event.target.value as VehicleCaseStatus
+                            )
+                          }
+                        >
+                          {caseStatuses.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                     </div>
 
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <button
-                        onClick={() => loadDeal(deal)}
-                        className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
-                      >
-                        Load Deal
-                      </button>
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-lg bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">
+                          Maximum purchase
+                        </p>
+                        <p className="mt-1 font-bold">
+                          {money(numberValue(item.purchase))}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">
+                          Expected resale
+                        </p>
+                        <p className="mt-1 font-bold">
+                          {money(numberValue(item.resale))}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">
+                          Estimated costs
+                        </p>
+                        <p className="mt-1 font-bold">
+                          {money(
+                            numberValue(item.parts) +
+                              numberValue(item.labor) +
+                              numberValue(item.auctionFees) +
+                              numberValue(item.transport) +
+                              numberValue(item.detailing) +
+                              numberValue(item.reserve)
+                          )}
+                        </p>
+                      </div>
+                    </div>
 
-                      <button
-                        onClick={() => deleteDeal(deal.id)}
-                        className="rounded-lg border border-red-200 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50"
+                    <div className="mt-4">
+                      <label
+                        className={labelClass}
+                        htmlFor={`notes-${item.id}`}
                       >
-                        Delete
+                        Inspection and repair notes
+                      </label>
+                      <textarea
+                        id={`notes-${item.id}`}
+                        className={inputClass}
+                        rows={3}
+                        placeholder="Record visible damage, needed repairs, title concerns, or follow-up..."
+                        value={item.issueNotes}
+                        onChange={(event) =>
+                          updateCaseNotes(item.id, event.target.value)
+                        }
+                      />
+                    </div>
+
+                    <div className="mt-4 flex justify-end">
+                      <button
+                        className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50"
+                        onClick={() => deleteVehicleCase(item.id)}
+                      >
+                        Delete Case
                       </button>
                     </div>
                   </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
-        {/* Upcoming features */}
-        <section className="rounded-2xl bg-white p-6 shadow-sm">
-          <h2 className="text-xl font-bold">
-            AI Inspection and Vendor Quotes
-          </h2>
-
-          <p className="mt-2 text-sm text-slate-600">
-            Planned features include photo-based damage assessment,
-            repair quote requests, and searches for used or salvage parts.
-          </p>
-
-          <div className="mt-4 rounded-xl border-2 border-dashed border-slate-300 p-8 text-center">
-            <p className="font-semibold">Vehicle Photo Scanner</p>
-            <p className="mt-1 text-sm text-slate-500">
-              Photo uploads and AI inspection are not connected yet.
-            </p>
-          </div>
-        </section>
-
-        <footer className="pb-4 text-center text-sm text-slate-500">
-          Dealer AI Platform · Acquisition Intelligence for Used Cars
+        <footer className="pb-6 text-center text-xs leading-5 text-slate-500">
+          CarAI is a decision-support tool. Verify vehicle condition,
+          title history, repair costs, and market value independently
+          before purchasing.
         </footer>
       </div>
     </main>
